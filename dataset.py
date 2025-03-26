@@ -5,10 +5,12 @@ from transformers import BertTokenizer
 
 
 class YelpDataset(Dataset):
-    def __init__(self, reviews_df, users_df, businesses_df, tokenizer, max_length=128):
-        self.reviews = reviews_df
+    def __init__(self, reviews_df, users_df, businesses_df, user_texts, business_texts, tokenizer, max_length=256):
+        self.reviews = reviews_df.reset_index(drop=True)
         self.users = users_df
         self.businesses = businesses_df
+        self.user_texts = user_texts       
+        self.business_texts = business_texts
         self.tokenizer = tokenizer
         self.max_length = max_length
         
@@ -17,44 +19,74 @@ class YelpDataset(Dataset):
     
     def __getitem__(self, idx):
         review = self.reviews.iloc[idx]
-        user = self.users[self.users['user_id'] == review['user_id']].iloc[0]
-        business = self.businesses[self.businesses['business_id'] == review['business_id']].iloc[0]
-        
-        # Process review text
-        text_encoding = self.tokenizer(
-            review['text'],
+        user_id = review['user_id']
+        business_id = review['business_id']
+
+        user_text = self.user_texts.get(user_id, "")
+        user_enc = self.tokenizer(
+            user_text,
             max_length=self.max_length,
             padding='max_length',
             truncation=True,
             return_tensors='pt'
         )
-        
-        # User features
+        user_input_ids = user_enc['input_ids'].squeeze(0)
+        user_attention_mask = user_enc['attention_mask'].squeeze(0)
+
+        business_text = self.business_texts.get(business_id, "")
+        business_enc = self.tokenizer(
+            business_text,
+            max_length=self.max_length,
+            padding='max_length',
+            truncation=True,
+            return_tensors='pt'
+        )
+        business_input_ids = business_enc['input_ids'].squeeze(0)
+        business_attention_mask = business_enc['attention_mask'].squeeze(0)
+
+        user_row = self.users[self.users['user_id'] == user_id]
+        user_row = self.users[self.users['user_id'] == user_id]
+        if user_row.empty:
+            user_info = None
+        else:
+            user_info = user_row.iloc[0]
+
+        business_row = self.businesses[self.businesses['business_id'] == business_id]
+        if business_row.empty:
+            business_info = None
+        else:
+            business_info = business_row.iloc[0]
+
+        if user_info is None or business_info is None:
+            return self.__getitem__((idx + 1) % len(self.reviews))
+
         user_features = torch.tensor([
-            user['average_stars'],
-            user['review_count'],
-            user['useful'],
-            user['funny'],
-            user['cool']
+            user_info['average_stars'],
+            user_info['review_count'],
+            user_info['useful'],
+            user_info['funny'],
+            user_info['cool']
         ], dtype=torch.float)
-        
-        # Business features
+
         business_features = torch.tensor([
-            business['stars'],
-            business['review_count'],
-            business['is_open']
+            business_info['stars'],
+            business_info['review_count'],
+            business_info['is_open']
         ], dtype=torch.float)
-        
-        # Target rating
-        rating = torch.tensor(review['stars'], dtype=torch.float)
-        
+
+
+
         return {
-            'input_ids': text_encoding['input_ids'].squeeze(),
-            'attention_mask': text_encoding['attention_mask'].squeeze(),
-            'user_features': user_features,
-            'business_features': business_features,
-            'rating': rating
+            "user_input_ids": user_input_ids,
+            "user_attention_mask": user_attention_mask,
+            "user_features": user_features,
+
+            "business_input_ids": business_input_ids,
+            "business_attention_mask": business_attention_mask,
+            "business_features": business_features,
         }
+
+
 
 if __name__ == "__main__":
     reviews_iter = pd.read_json('yelp_dataset/yelp_academic_dataset_review.json', lines=True, chunksize=100)

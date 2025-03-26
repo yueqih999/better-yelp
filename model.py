@@ -10,8 +10,8 @@ import json
 from tqdm import tqdm
 
 
-class MultiModalRecommender(nn.Module):
-    def __init__(self, bert_model, user_feature_dim=5, business_feature_dim=3):
+class MultiModalTwoTower(nn.Module):
+    def __init__(self, bert_model, user_feature_dim=5, business_feature_dim=3, hidden_dim=128):
         super().__init__()
         self.bert = bert_model
         self.text_dim = 768  # BERT hidden size
@@ -20,39 +20,39 @@ class MultiModalRecommender(nn.Module):
         self.user_mlp = nn.Sequential(
             nn.Linear(user_feature_dim, 64),
             nn.ReLU(),
-            nn.Linear(64, 32)
+            nn.Linear(64, hidden_dim)
         )
         
         self.business_mlp = nn.Sequential(
-            nn.Linear(business_feature_dim, 32),
+            nn.Linear(business_feature_dim, 64),
             nn.ReLU(),
-            nn.Linear(32, 16)
+            nn.Linear(64, hidden_dim)
         )
         
-        # Combined features processing
-        self.combined_mlp = nn.Sequential(
-            nn.Linear(self.text_dim + 32 + 16, 256),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, 1)
-        )
+        self.bert_proj = nn.Linear(self.text_dim, hidden_dim)
         
-        
-    def forward(self, input_ids, attention_mask, user_features, business_features):
-        # Process text through BERT
-        bert_output = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        text_features = bert_output.last_hidden_state[:, 0, :]  # Use [CLS] token
-        
-        # Process user and business features
-        user_processed = self.user_mlp(user_features)
-        business_processed = self.business_mlp(business_features)
-        
-        # Combine all features
-        combined_features = torch.cat([text_features, user_processed, business_processed], dim=1)
-        
-        # Predict rating
-        rating_pred = self.combined_mlp(combined_features)
-        return rating_pred.squeeze()
+
+    def encode_user(self, user_features, user_input_ids, user_attention_mask):
+        text_embed = self.bert(user_input_ids, user_attention_mask).last_hidden_state[:, 0, :]
+        text_embed = self.bert_proj(text_embed)
+        struct_embed = self.user_mlp(user_features)
+        return nn.functional.normalize(text_embed + struct_embed, dim=1)
+
+
+    def encode_business(self, business_features, business_input_ids, business_attention_mask):
+        text_embed = self.bert(business_input_ids, business_attention_mask).last_hidden_state[:, 0, :]
+        text_embed = self.bert_proj(text_embed)
+        struct_embed = self.business_mlp(business_features)
+        return nn.functional.normalize(text_embed + struct_embed, dim=1)
+
+
+    def forward(self, 
+                user_features, 
+                user_input_ids,
+                user_attention_mask, 
+                business_features,
+                business_input_ids,
+                business_attention_mask):
+        user_emb = self.encode_user(user_features, user_input_ids, user_attention_mask)
+        business_emb = self.encode_business(business_features, business_input_ids, business_attention_mask)
+        return user_emb, business_emb
