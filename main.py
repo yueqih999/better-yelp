@@ -9,6 +9,7 @@ from model import MultiModalTwoTower
 from transformers import BertTokenizer, BertModel
 from tqdm import tqdm
 from collections import defaultdict
+import os
 
 
 def load_data():
@@ -156,10 +157,19 @@ def main():
     bert_model = BertModel.from_pretrained('bert-base-uncased')
     model = MultiModalTwoTower(
         bert_model,
-        user_feature_dim=5,
+        user_feature_dim=7,
         business_feature_dim=3,
         hidden_dim=128
     ).to(device)
+
+    # Check if best_model exists and load it
+    best_model_path = 'model/best_model.pth'
+    if os.path.exists(best_model_path):
+        print(f"Loading existing model from {best_model_path}")
+        model.load_state_dict(torch.load(best_model_path))
+        print("Model loaded successfully")
+    else:
+        print("No existing model found. Starting training from scratch.")
 
     print("reviews_df after filter:", len(reviews_df))
     print("train_reviews:", len(train_reviews))
@@ -171,7 +181,7 @@ def main():
     
     # Train model
     print("Starting training...")
-    train_model(model, train_loader, val_loader, optimizer=optimizer, num_epochs=5, device=device)
+    train_model(model, train_loader, val_loader, optimizer=optimizer, num_epochs=15, device=device)
 
 
 if __name__ == "__main__":
