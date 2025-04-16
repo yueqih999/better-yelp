@@ -10,16 +10,14 @@ from transformers import BertTokenizer, BertModel
 from tqdm import tqdm
 from collections import defaultdict
 import os
+from retrieval import FaissRetriever
 
 
 def load_data():
-    # Load the datasets
     reviews_df = pd.read_json('yelp_dataset/yelp_academic_dataset_review.json', lines=True, nrows=10000)
     users_df = pd.read_json('yelp_dataset/yelp_academic_dataset_user.json', lines=True, nrows=10000)
     businesses_df = pd.read_json('yelp_dataset/yelp_academic_dataset_business.json', lines=True, nrows=10000)
 
-    
-    # Select relevant columns
     reviews_df = reviews_df[['review_id', 'user_id', 'business_id', 'stars', 'text']]
     users_df = users_df[['user_id', 'average_stars', 'review_count', 'useful', 'funny', 'cool']]
     businesses_df = businesses_df[['business_id', 'stars', 'review_count', 'is_open']]
@@ -122,11 +120,62 @@ def train_model(model, train_loader, val_loader, optimizer, num_epochs, device):
             print("  - Best model saved.")
 
 
-def main():
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def encode_all_businesses(model, businesses_df, business_texts, tokenizer, device, batch_size=32):
+    """Encode all businesses using the trained model"""
+    model.eval()
+    all_embeddings = []
+    all_business_ids = []
+    business_info = {}
     
-    # Load data
+
+    for i in range(0, len(businesses_df), batch_size):
+        batch_df = businesses_df.iloc[i:i+batch_size]
+        batch_ids = batch_df['business_id'].tolist()
+
+        batch_texts = [business_texts.get(bid, "") for bid in batch_ids]
+        
+        # Tokenize
+        encodings = tokenizer(
+            batch_texts,
+            max_length=256,
+            padding='max_length',
+            truncation=True,
+            return_tensors='pt'
+        ).to(device)
+        
+        # Create business features
+        features = torch.tensor([
+            [row['stars'], row['review_count'], row['is_open']]
+            for _, row in batch_df.iterrows()
+        ], dtype=torch.float).to(device)
+        
+        # Get embeddings
+        with torch.no_grad():
+            _, business_embed = model(
+                None, 
+                None, 
+                None, 
+                features,
+                encodings['input_ids'],
+                encodings['attention_mask']
+            )
+            all_embeddings.append(business_embed.cpu())
+            all_business_ids.extend(batch_ids)
+        
+        # Store business info
+        for _, row in batch_df.iterrows():
+            business_info[row['business_id']] = {
+                'name': row.get('name', ''),
+                'stars': row['stars'],
+                'review_count': row['review_count'],
+                'categories': business_texts.get(row['business_id'], '')
+            }
+    
+    return torch.cat(all_embeddings), all_business_ids, business_info
+
+def main():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     print("Loading data...")
     reviews_df, users_df, businesses_df = load_data()
     valid_user_ids = set(users_df['user_id'])
@@ -139,21 +188,16 @@ def main():
     user_texts = aggregate_user_texts(reviews_df, max_reviews_per_user=50)
     business_texts = collect_business_categories(businesses_df)
 
-    # Split data
     train_reviews, val_reviews = train_test_split(reviews_df, test_size=0.2, random_state=42)
-    
-    # Initialize tokenizer
+
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-    
-    # Create datasets
+
     train_dataset = YelpDataset(train_reviews, users_df, businesses_df, user_texts, business_texts, tokenizer)
     val_dataset = YelpDataset(val_reviews, users_df, businesses_df, user_texts, business_texts, tokenizer)
-    
-    # Create dataloaders
+
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=32)
-    
-    # Initialize model
+
     bert_model = BertModel.from_pretrained('bert-base-uncased')
     model = MultiModalTwoTower(
         bert_model,
@@ -162,7 +206,6 @@ def main():
         hidden_dim=128
     ).to(device)
 
-    # Check if best_model exists and load it
     best_model_path = 'model/best_model.pth'
     if os.path.exists(best_model_path):
         print(f"Loading existing model from {best_model_path}")
@@ -178,10 +221,50 @@ def main():
     print("val_dataset:", len(val_dataset))
 
     optimizer = torch.optim.Adam(model.parameters(), lr=2e-5)
-    
-    # Train model
+
     print("Starting training...")
     train_model(model, train_loader, val_loader, optimizer=optimizer, num_epochs=15, device=device)
+
+    # build the retrieval index
+    print("\nBuilding retrieval index...")
+    retriever = FaissRetriever(hidden_dim=128)
+    
+    print("Encoding all businesses...")
+    business_embeddings, business_ids, business_info = encode_all_businesses(
+        model, businesses_df, business_texts, tokenizer, device
+    )
+    # Add to index
+    print("Adding businesses to index...")
+    retriever.add_businesses(business_embeddings, business_ids, business_info)
+    
+    # Example
+    print("\nTesting recommendations...")
+    sample_user = val_dataset[0]
+    user_features = sample_user['user_features'].unsqueeze(0).to(device)
+    user_input_ids = sample_user['user_input_ids'].unsqueeze(0).to(device)
+    user_attention_mask = sample_user['user_attention_mask'].unsqueeze(0).to(device)
+    
+    with torch.no_grad():
+        user_emb, _ = model(
+            user_features,
+            user_input_ids,
+            user_attention_mask,
+            None,  # business features not needed
+            None,  # business input ids not needed
+            None   # business attention mask not needed
+        )
+    
+    user_emb = user_emb[0].cpu().detach()
+    
+    # Get recommendations
+    recommendations = retriever.search(user_emb)
+    print("\nTop 5 recommendations:")
+    for business_id, score, info in recommendations[:5]:
+        print(f"Business: {info.get('name', 'Unknown')}")
+        print(f"Categories: {info.get('categories', 'N/A')}")
+        print(f"Rating: {info.get('stars', 0.0):.1f} ({info.get('review_count', 0)} reviews)")
+        print(f"Similarity Score: {score:.3f}")
+        print()
 
 
 if __name__ == "__main__":

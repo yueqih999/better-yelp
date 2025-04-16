@@ -1,6 +1,6 @@
 # Yelp Business Recommendation System
 
-A multimodal recommendation system that combines user and business information to provide personalized business recommendations using a two-tower neural network architecture.
+A multimodal recommendation system that combines user and business information to provide personalized business recommendations using a two-tower neural network architecture with efficient Faiss-based retrieval.
 
 ## Dataset Source
 
@@ -15,40 +15,17 @@ The dataset is processed to include:
 - User features (average stars, review count, useful/funny/cool votes)
 - Business features (stars, review count, open status)
 
-## Input/Output
+## Model Architecture
 
-### Input
-1. User Features:
-   - Average stars
-   - Review count
-   - Useful votes
-   - Funny votes
-   - Cool votes
-   - User review text (aggregated from past reviews)
-
-2. Business Features:
-   - Average stars
-   - Review count
-   - Open status
-   - Business categories
-
-### Output
-- User and business embeddings in a shared latent space
-- Similarity scores between users and businesses
-- Business recommendations based on user preferences
-
-## Model Structure
-
-The model uses a two-tower architecture with the following components:
-
+### Two-Tower Network
 1. User Tower:
    - BERT encoder for processing user review text
-   - MLP layers for processing numerical user features
+   - MLP layers for processing numerical user features (7-dim)
    - Feature fusion layer combining text and numerical embeddings
 
 2. Business Tower:
    - BERT encoder for processing business categories
-   - MLP layers for processing numerical business features
+   - MLP layers for processing numerical business features (3-dim)
    - Feature fusion layer combining text and numerical embeddings
 
 3. Shared Components:
@@ -56,6 +33,29 @@ The model uses a two-tower architecture with the following components:
    - BERT base model (uncased)
    - L2 normalization on final embeddings
    - Cross-entropy loss for training
+
+### Faiss Retrieval System
+- IndexFlatIP index type for exact inner product similarity computation
+- L2 normalized embeddings for cosine similarity search
+- Supports both single query and batch retrieval
+
+## Features
+
+### Input Features
+1. User Features:
+   - Numerical (5-dim): average stars, review count, useful/funny/cool votes
+   - Sentiment (2-dim): polarity and subjectivity scores from TextBlob
+   - Text: Aggregated historical reviews (max 50 reviews)
+
+2. Business Features:
+   - Numerical (3-dim): stars, review count, open status
+   - Text: Business categories
+
+### Output
+- User and business embeddings in a shared 128-dim space
+- Fast similarity search using Faiss
+- Ranked list of recommended businesses with metadata
+- Similarity scores between users and businesses
 
 ## Training
 
@@ -65,3 +65,39 @@ The model is trained using:
 - Optimizer: Adam
 - Loss function: Cross-entropy
 - Training/validation split: 80/20
+
+## Inference
+
+1. User Encoding:
+   - Processes user features and review text
+   - Generates 128-dim user embedding
+
+2. Business Indexing:
+   - Pre-computes all business embeddings
+   - Builds Faiss index for fast retrieval
+
+3. Recommendation:
+   - Performs efficient similarity search
+   - Returns top-k most similar businesses
+   - Includes business metadata in results
+
+## Usage
+
+1. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+2. Train model and build index:
+```bash
+python main.py
+```
+
+3. Get recommendations:
+```python
+# Single user recommendation
+recommendations = retriever.search(user_embedding, k=10)
+
+# Batch recommendations
+batch_recommendations = retriever.batch_search(user_embeddings, k=10)
+```

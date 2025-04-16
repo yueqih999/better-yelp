@@ -30,11 +30,8 @@ class MultiModalTwoTower(nn.Module):
         self.bert_proj = nn.Linear(self.text_dim, hidden_dim)
 
     def load_state_dict(self, state_dict, strict=True):
-        """Override load_state_dict to handle dimension mismatch"""
-        # Get the current user MLP weights
         current_user_weights = self.user_mlp[0].weight.data
-        
-        # Load the state dict
+
         super().load_state_dict(state_dict, strict=False)
         
         # If the loaded weights have different dimensions
@@ -44,8 +41,7 @@ class MultiModalTwoTower(nn.Module):
             new_weights = torch.zeros((64, self.user_feature_dim))
             new_weights[:, :current_user_weights.shape[1]] = current_user_weights
             self.user_mlp[0].weight.data = new_weights
-            
-            # Initialize new biases
+
             new_biases = torch.zeros(64)
             new_biases[:] = self.user_mlp[0].bias.data
             self.user_mlp[0].bias.data = new_biases

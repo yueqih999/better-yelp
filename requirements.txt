@@ -6,3 +6,4 @@ numpy>=1.19.0
 textblob>=0.15.3
 tqdm>=4.62.0
 nltk>=3.7
+faiss-cpu>=1.7.0  # Use faiss-gpu if you have GPU support
